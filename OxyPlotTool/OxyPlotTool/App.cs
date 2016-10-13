@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -9,6 +10,7 @@ using System.Reflection;
 using System.Text;
 using System.Windows.Forms;
 using OxyPlot;
+using OxyPlot.Axes;
 using OxyPlot.Series;
 
 using PngExporter = OxyPlot.WindowsForms.PngExporter;
@@ -28,6 +30,7 @@ namespace OxyPlotTool
 			AddTypeDescriptors();
 			plotView.Model = plotModel;
 			propertyGrid.SelectedObject = dataList;
+			dataList.PlotModel = plotModel;
 		}
 
 		private readonly PlotModel plotModel = new PlotModel();
@@ -58,7 +61,8 @@ namespace OxyPlotTool
 						if (dprop.IsReadOnly ||
 							dprop.PropertyType.IsSubclassOf(typeof(Delegate)) ||
 							dprop.PropertyType == typeof(object) ||
-							dprop.Name == "Parent")
+							dprop.Name == "Parent" ||
+							dprop.Name.EndsWith("Field"))
 							dprop.SetIsBrowsable(false);
 					}
 				}
@@ -223,6 +227,10 @@ namespace OxyPlotTool
 			[TypeConverter(typeof(SeriesDataConverter))]
 			public SeriesData SelectedSeries { get; set; }
 
+			[TypeConverter(typeof(ExpandableObjectConverter))]
+			public PlotModel PlotModel { get; set; }
+
+
 			public SeriesDataList()
 			{
 				Count = 1;
@@ -245,49 +253,63 @@ namespace OxyPlotTool
 				}
 			}
 
-			static object RowToItem(Type itemType, DataRow row)
+			[TypeConverter(typeof(ColumnConverter))]
+			public Dictionary<string, string> Columns { get; set; } = new Dictionary<string, string>();
+
+			static object CreateInstance(Type t)
 			{
-				var ret = Activator.CreateInstance(itemType);
-				var idx = 0;
+				var ctor = t.GetConstructors()[0];
+				return ctor.Invoke(ctor.GetParameters().Select(p =>
+				{
+					var v = p.DefaultValue;
+					return v is DBNull ? null : v;
+				}).ToArray());
+			}
+
+			object RowToItem(Type itemType, DataColumnCollection columns, DataRow row)
+			{
+				var ret = CreateInstance(itemType);
 				var items = row.ItemArray;
 				if (items.Length == 0 || items[0] == null || items[0].Equals("")) return null;
-				foreach (var prop in itemType.GetProperties())
+				foreach (var pair in Columns)
 				{
-					if (idx >= items.Length) break;
-					if (!prop.CanWrite || !prop.CanRead || prop.GetIndexParameters().Length > 0) continue;
+					if (pair.Key == "" || string.IsNullOrEmpty(pair.Value)) continue;
+					try
 					{
-						try
+						var prop = itemType.GetProperty(pair.Key);
+						var idx = columns.IndexOf(pair.Value);
+						if (prop == null || idx < 0) continue;
+						var item = items[idx];
+						if (!prop.PropertyType.IsInstanceOfType(item))
 						{
-							var item = items[idx++];
-							if (!prop.PropertyType.IsInstanceOfType(item))
+							if (item is IConvertible && typeof (IConvertible).IsAssignableFrom(prop.PropertyType))
 							{
-								if (item is IConvertible && typeof (IConvertible).IsAssignableFrom(prop.PropertyType))
-								{
-									item = ((IConvertible) item).ToType(prop.PropertyType, CultureInfo.InvariantCulture);
-								}
-								else
-								{
-									var parseMethod = prop.PropertyType.GetMethod("Parse", BindingFlags.Static | BindingFlags.Public);
-									item = parseMethod.Invoke(null, new[] {item});
-								}
+								item = ((IConvertible) item).ToType(prop.PropertyType, CultureInfo.InvariantCulture);
 							}
-							prop.SetValue(ret, item, null);
+							else
+							{
+								var parseMethod = prop.PropertyType.GetMethod("Parse", BindingFlags.Static | BindingFlags.Public);
+								item = parseMethod.Invoke(null, new[] {item});
+							}
 						}
-						catch
-						{
-							// Ignored
-						}
+						prop.SetValue(ret, item, null);
+					}
+					catch
+					{
+						// ignored
 					}
 				}
 				return ret;
 			}
 
-			static object RowToDataPoint(DataRow row)
+			object RowToDataPoint(DataColumnCollection columns, DataRow row)
 			{
 				try
 				{
-					var x = row[0] as double? ?? double.Parse(row[0].ToString());
-					var y = row[1] as double? ?? double.Parse(row[1].ToString());
+					var rowX = row[columns.IndexOf(Columns["X"])];
+					var rowY = row[columns.IndexOf(Columns["Y"])];
+					var x = rowX as double? ?? double.Parse(rowX.ToString());
+					var y = rowY as double? ?? double.Parse(rowY.ToString());
 					return new DataPoint(x, y); 
 				}
 				catch
@@ -306,19 +328,133 @@ namespace OxyPlotTool
 					{
 						// DataPoint is a special snowflake, and doesn't define writable properties
 						if (type == typeof (DataPoint))
-							itemSeries.ItemsSource = dataTable.Rows.Cast<DataRow>()
-								.Select(RowToDataPoint)
-								.Where(o => o != null).ToArray();
+						{
+							var points = ((DataPointSeries) itemSeries).Points;
+							points.Clear();
+							points.AddRange(dataTable.Rows.Cast<DataRow>()
+								.Select(r => RowToDataPoint(dataTable.Columns, r)).OfType<DataPoint>());
+						}
+						else if (type == typeof (PieSlice))
+						{
+							((PieSeries) series).Slices = dataTable.Rows.Cast<DataRow>()
+								.Select(r => RowToItem(type, dataTable.Columns, r))
+								.Where(o => o != null)
+								.Cast<PieSlice>().ToList();
+						}
 						else
-							itemSeries.ItemsSource = dataTable.Rows.Cast<DataRow>()
-								.Select(r => RowToItem(type, r))
-								.Where(o => o != null).ToArray();
+						{
+							var items = Series.GetType().GetProperty("Items")?.GetValue(Series, null) as IList;
+							if (items != null)
+							{
+								items.Clear();
+								foreach (var o in dataTable.Rows.Cast<DataRow>()
+									.Select(r => RowToItem(type, dataTable.Columns, r))
+									.Where(o => o != null))
+								{
+									items.Add(o);
+								}
+							}
+							else
+							{
+								itemSeries.ItemsSource = dataTable.Rows.Cast<DataRow>()
+									.Select(r => RowToItem(type, dataTable.Columns, r))
+									.Where(o => o != null).ToArray();
+							}
+						}
 						return;
 					}
 				}
 				// TODO: Add heat/contour map data
 			}
 		}
+
+		class ColumnConverter : TypeConverter
+		{
+			public static string[] ColumnNames { get; set; }
+
+			static readonly ColumnSelector converter = new ColumnSelector();
+
+			class ColumnProperty : PropertyDescriptor
+			{
+				public ColumnProperty(string name) : base(name, null)
+				{
+				}
+
+				public override bool CanResetValue(object component)
+				{
+					return false;
+				}
+
+				public override object GetValue(object component)
+				{
+					string ret;
+					((Dictionary<string, string>) component).TryGetValue(Name, out ret);
+					return ret;
+				}
+
+				public override void ResetValue(object component)
+				{
+					throw new NotSupportedException();
+				}
+
+				public override void SetValue(object component, object value)
+				{
+					((Dictionary<string, string>) component)[Name] = (string) value;
+				}
+
+				public override bool ShouldSerializeValue(object component)
+				{
+					return false;
+				}
+
+				public override Type ComponentType => typeof (Dictionary<string, string>);
+				public override bool IsReadOnly => false;
+				public override Type PropertyType => typeof (string);
+				public override TypeConverter Converter => converter;
+			}
+
+			class ColumnSelector : TypeConverter
+			{
+				public override bool GetStandardValuesSupported(ITypeDescriptorContext context)
+				{
+					return true;
+				}
+
+				public override StandardValuesCollection GetStandardValues(ITypeDescriptorContext context)
+				{
+					return new StandardValuesCollection(ColumnNames ?? new string[0]);
+				}
+			}
+
+			public override bool GetPropertiesSupported(ITypeDescriptorContext context)
+			{
+				return true;
+			}
+
+			public override PropertyDescriptorCollection GetProperties(ITypeDescriptorContext context, object value, Attribute[] attributes)
+			{
+				var data = (SeriesData) context.Instance;
+				var itemType = data.Series == null ? null : GetItemType(data.Series.GetType());
+				if (itemType == null) return null;
+				if(itemType == typeof(DataPoint))
+					return new PropertyDescriptorCollection(
+						new PropertyDescriptor[]{new ColumnProperty("X"), new ColumnProperty("Y")});
+				return new PropertyDescriptorCollection(
+					itemType.GetProperties()
+					.Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
+					.Select(p => (PropertyDescriptor)new ColumnProperty(p.Name))
+					.ToArray()
+					);
+			}
+
+			public override object ConvertTo(ITypeDescriptorContext context, CultureInfo culture, object value, Type destinationType)
+			{
+				if (destinationType == typeof (string)) return "";
+				return base.ConvertTo(context, culture, value, destinationType);
+			}
+		}
+
+		
 
 		void AddTypeDescriptors()
 		{
@@ -349,7 +485,8 @@ namespace OxyPlotTool
 					.ToArray())
 				.ToArray();
 			dataTable.Clear();
-			//ColumnSelector.columnNames = data[0];
+			dataTable.Columns.Clear();
+			ColumnConverter.ColumnNames = data[0];
 			dataTable.Columns.AddRange(data[0].Select(n => new DataColumn(n)).ToArray());
 			for (int i = 1; i < data.Length; i++)
 			{
@@ -382,6 +519,9 @@ namespace OxyPlotTool
 			{
 				if (data.Series != null)
 				{
+					if(data.Series is TornadoBarSeries || data.Series is IntervalBarSeries)
+						if(!plotModel.Axes.Any(a => a is CategoryAxis && (a.Position == AxisPosition.Left || a.Position == AxisPosition.Right)))
+							plotModel.Axes.Add(new CategoryAxis {Position = AxisPosition.Left});
 					plotModel.Series.Add(data.Series);
 					data.AddDataToSeries(dataTable);
 				}
