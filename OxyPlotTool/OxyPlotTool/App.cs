@@ -463,7 +463,7 @@ namespace OxyPlotTool
 			TypeDescriptor.Refresh(typeof(OxyColor));
 		}
 
-		static void CheckedAction(Action a)
+		void CheckedAction(Action a)
 		{
 			try
 			{
@@ -471,7 +471,7 @@ namespace OxyPlotTool
 			}
 			catch (Exception e)
 			{
-				MessageBox.Show(e.Message, e.GetType().Name);
+				MessageBox.Show(this, e.Message, e.GetType().Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
 			}
 		}
 
@@ -480,7 +480,7 @@ namespace OxyPlotTool
 			if (openFileDialog.ShowDialog(this) != DialogResult.OK)
 				return;
 			var data = File.ReadAllLines(openFileDialog.FileName)
-				.Select(l => (" " + l).Split(',')
+				.Select(l => l.Split(',')
 					.Select(s => s.Trim())
 					.ToArray())
 				.ToArray();
@@ -531,10 +531,7 @@ namespace OxyPlotTool
 
 		private void propertyGrid1_PropertyValueChanged(object s, PropertyValueChangedEventArgs e)
 		{
-			if (e.ChangedItem.PropertyDescriptor != null && e.ChangedItem.PropertyDescriptor.Name == "Series")
-			{
-				RefreshGraph();
-			}
+			RefreshGraph();
 		}
 
 		private static readonly Dictionary<string, IExporter> exporters =
@@ -564,5 +561,64 @@ namespace OxyPlotTool
 		{
 			CheckedAction(Export);
 		}
-	}
+
+	    private string GetName(string initial)
+	    {
+	        var d = new ColumnName {NameValue = initial};
+	        if (d.ShowDialog(this) != DialogResult.OK) return null;
+	        return d.NameValue;
+	    }
+
+	    void NewColumn()
+	    {
+            var name = GetName("New column");
+            if (string.IsNullOrEmpty(name)) return;
+
+            dataGridView.SelectionMode = DataGridViewSelectionMode.RowHeaderSelect;
+            dataTable.Columns.Add(name);
+            foreach (DataGridViewColumn col in dataGridView.Columns)
+                col.SortMode = DataGridViewColumnSortMode.NotSortable;
+            dataGridView.SelectionMode = DataGridViewSelectionMode.ColumnHeaderSelect;
+        }
+
+	    void RenameColumn()
+	    {
+            var cols = dataGridView.SelectedColumns;
+            if (cols.Count == 0) return;
+            var col = cols[0];
+            var newName = GetName(col.Name);
+            if (string.IsNullOrEmpty(newName)) return;
+
+            dataGridView.SelectionMode = DataGridViewSelectionMode.RowHeaderSelect;
+            dataTable.Columns[col.Name].ColumnName = newName;
+            foreach (DataGridViewColumn vcol in dataGridView.Columns)
+                vcol.SortMode = DataGridViewColumnSortMode.NotSortable;
+            dataGridView.SelectionMode = DataGridViewSelectionMode.ColumnHeaderSelect;
+        }
+
+	    void DeleteColumn()
+        {
+            var cols = dataGridView.SelectedColumns;
+            if (cols.Count == 0) return;
+            var col = cols[0];
+
+            dataTable.Columns.Remove(col.Name);
+        }
+
+
+        private void newColumnToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            CheckedAction(NewColumn);
+        }
+
+        private void renameColumnToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            CheckedAction(RenameColumn);
+        }
+
+        private void deleteColumnToolStripMenuItem_Click(object sender, EventArgs e)
+        {
+            CheckedAction(DeleteColumn);
+        }
+    }
 }

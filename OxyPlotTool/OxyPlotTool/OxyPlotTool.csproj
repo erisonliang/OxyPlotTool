@@ -79,6 +79,12 @@
     <Compile Include="App.Designer.cs">
       <DependentUpon>App.cs</DependentUpon>
     </Compile>
+    <Compile Include="ColumnName.cs">
+      <SubType>Form</SubType>
+    </Compile>
+    <Compile Include="ColumnName.Designer.cs">
+      <DependentUpon>ColumnName.cs</DependentUpon>
+    </Compile>
     <Compile Include="DynamicTypeDescriptor.cs" />
     <Compile Include="ExportOptions.cs">
       <SubType>Form</SubType>
@@ -91,6 +97,9 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <EmbeddedResource Include="App.resx">
       <DependentUpon>App.cs</DependentUpon>
+    </EmbeddedResource>
+    <EmbeddedResource Include="ColumnName.resx">
+      <DependentUpon>ColumnName.cs</DependentUpon>
     </EmbeddedResource>
     <EmbeddedResource Include="ExportOptions.resx">
       <DependentUpon>ExportOptions.cs</DependentUpon>
